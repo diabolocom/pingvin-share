@@ -35,7 +35,7 @@ cache:
   #Maxiumum number of items
   maxItems: 1000
   #Whether to enable redis share cache
-  redis-enabled: false
+  redis-enabled: "false"
   #Url to the redis instance
   redis-url: redis://pingvin-redis:6379
 email:

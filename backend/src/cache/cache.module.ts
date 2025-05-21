@@ -1,11 +1,11 @@
-import { Global, Module } from "@nestjs/common";
+import { Module } from "@nestjs/common";
 import { CacheModule } from "@nestjs/cache-manager";
-import { ConfigModule, ConfigService } from "@nestjs/config";
 import { CacheableMemory } from "cacheable";
 import { createKeyv } from "@keyv/redis";
 import { Keyv } from "keyv";
+import { ConfigModule } from "src/config/config.module";
+import { ConfigService } from "src/config/config.service";
 
-@Global()
 @Module({
   imports: [
     ConfigModule,
@@ -14,9 +14,9 @@ import { Keyv } from "keyv";
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: async (configService: ConfigService) => {
-        const useRedis = configService.get<boolean>("cache.redis-enabled");
-        const ttl = configService.get<number>("cache.ttl");
-        const max = configService.get<number>("cache.maxItems");
+        const useRedis = configService.get("cache.redis-enabled");
+        const ttl = configService.get("cache.ttl");
+        const max = configService.get("cache.maxItems");
 
         let config = {
           ttl,
@@ -25,7 +25,7 @@ import { Keyv } from "keyv";
         };
 
         if (useRedis) {
-          const redisUrl = configService.get<string>("cache.redis-url");
+          const redisUrl = configService.get("cache.redis-url");
           config.stores = [
             new Keyv({ store: new CacheableMemory({ ttl, lruSize: 5000 }) }),
             createKeyv(redisUrl),
