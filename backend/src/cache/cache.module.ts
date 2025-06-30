@@ -15,7 +15,7 @@ import { ConfigService } from "src/config/config.service";
       inject: [ConfigService],
       useFactory: async (configService: ConfigService) => {
         const useRedis = configService.get("cache.redis-enabled");
-        const ttl = configService.get("cache.ttl");
+        const ttl = configService.get("cache.ttl") * 1000;
         const max = configService.get("cache.maxItems");
 
         let config = {
