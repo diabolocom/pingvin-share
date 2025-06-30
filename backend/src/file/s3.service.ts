@@ -4,6 +4,7 @@ import {
   InternalServerErrorException,
   NotFoundException,
   Logger,
+  Inject,
 } from "@nestjs/common";
 import {
   AbortMultipartUploadCommand,
@@ -26,23 +27,24 @@ import { File } from "./file.service";
 import { Readable } from "stream";
 import { validate as isValidUUID } from "uuid";
 import * as archiver from "archiver";
+import { Cache } from "cache-manager";
+import { CACHE_MANAGER } from "@nestjs/cache-manager";
+import { log } from "console";
+
+interface MultipartUpload {
+  uploadId: string;
+  parts: Array<{ ETag: string | undefined; PartNumber: number }>;
+}
 
 @Injectable()
 export class S3FileService {
   private readonly logger = new Logger(S3FileService.name);
 
-  private multipartUploads: Record<
-    string,
-    {
-      uploadId: string;
-      parts: Array<{ ETag: string | undefined; PartNumber: number }>;
-    }
-  > = {};
-
   constructor(
     private prisma: PrismaService,
     private config: ConfigService,
-  ) {}
+    @Inject(CACHE_MANAGER) private cache: Cache,
+  ) { }
 
   async create(
     data: string,
@@ -55,6 +57,8 @@ export class S3FileService {
     } else if (!isValidUUID(file.id)) {
       throw new BadRequestException("Invalid file ID format");
     }
+
+    const fileIdKey = `file-${file.id}`;
 
     const buffer = Buffer.from(data, "base64");
     const key = `${this.getS3Path()}${shareId}/${file.name}`;
@@ -77,21 +81,15 @@ export class S3FileService {
         }
 
         // Store the uploadId and parts list in memory
-        this.multipartUploads[file.id] = {
-          uploadId,
-          parts: [],
-        };
+        await this.cache.set(fileIdKey, uploadId);
       }
 
-      // Get the ongoing multipart upload
-      const multipartUpload = this.multipartUploads[file.id];
-      if (!multipartUpload) {
+      const uploadId: string = await this.cache.get(fileIdKey);
+      if (!uploadId) {
         throw new InternalServerErrorException(
           "Multipart upload session not found.",
         );
       }
-
-      const uploadId = multipartUpload.uploadId;
 
       // Upload the current chunk
       const partNumber = chunk.index + 1; // Part numbers start from 1
@@ -107,43 +105,51 @@ export class S3FileService {
       );
 
       // Store the ETag and PartNumber for later completion
-      multipartUpload.parts.push({
-        ETag: uploadPartResponse.ETag,
-        PartNumber: partNumber,
-      });
-
+      await this.cache.set(`${fileIdKey}-multi-${partNumber}`, uploadPartResponse.ETag);
+      
       // Complete the multipart upload if it's the last chunk
       if (chunk.index === chunk.total - 1) {
+        await new Promise(r => setTimeout(r, 100));
+
+        let parts = []
+        for (let i = 0; i < chunk.total; i++) {
+          parts.push({
+            PartNumber: i + 1,
+            ETag: await this.cache.get(`${fileIdKey}-multi-${i + 1}`),
+          });
+        }
+        this.logger.error(parts);
+
         await s3Instance.send(
           new CompleteMultipartUploadCommand({
             Bucket: bucketName,
             Key: key,
             UploadId: uploadId,
             MultipartUpload: {
-              Parts: multipartUpload.parts,
+              Parts: parts,
             },
           }),
         );
 
         // Remove the completed upload from memory
-        delete this.multipartUploads[file.id];
+        await this.cache.del(fileIdKey)
       }
     } catch (error) {
       // Abort the multipart upload if it fails
-      const multipartUpload = this.multipartUploads[file.id];
-      if (multipartUpload) {
+      const uploadId: string = await this.cache.get(fileIdKey);
+      if (uploadId) {
         try {
           await s3Instance.send(
             new AbortMultipartUploadCommand({
               Bucket: bucketName,
               Key: key,
-              UploadId: multipartUpload.uploadId,
+              UploadId: uploadId,
             }),
           );
         } catch (abortError) {
           console.error("Error aborting multipart upload:", abortError);
         }
-        delete this.multipartUploads[file.id];
+        await this.cache.del(fileIdKey)
       }
       this.logger.error(error);
       throw new Error("Multipart upload failed. The upload has been aborted.");
